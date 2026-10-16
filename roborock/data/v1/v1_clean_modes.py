@@ -174,9 +174,16 @@ def get_clean_routes(features: DeviceFeatures, region: str) -> list[CleanRoutes]
 
 def get_water_modes(features: DeviceFeatures) -> list[WaterModes]:
     """Get the valid water modes for the device - also known as 'water flow' or 'water level'"""
-    # Water slide mode supports a separate set of water flow codes.
+    # Water-slide devices have their own regular flow codes, but can also
+    # advertise special clean-motor modes (AI SmartPlan / custom). Keep
+    # the special modes gated by their respective device capability flags.
     if features.is_water_slide_mode_supported:
-        return list(WATER_SLIDE_MODE_MAPPING.values())
+        supported_modes = list(WATER_SLIDE_MODE_MAPPING.values())
+        if features.is_customized_clean_supported:
+            supported_modes.append(WaterModes.CUSTOMIZED)
+        if features.is_smart_clean_mode_set_supported:
+            supported_modes.append(WaterModes.SMART_MODE)
+        return supported_modes
 
     supported_modes = [WaterModes.OFF]
     if features.is_mop_shake_module_supported:
@@ -218,7 +225,12 @@ def get_water_mode_mapping(features: DeviceFeatures) -> dict[int, str]:
     explicit code mapping to preserve those slide-specific codes.
     """
     if features.is_water_slide_mode_supported:
-        return {code: mode.value for code, mode in WATER_SLIDE_MODE_MAPPING.items()}
+        mapping = {code: mode.value for code, mode in WATER_SLIDE_MODE_MAPPING.items()}
+        if features.is_customized_clean_supported:
+            mapping[WaterModes.CUSTOMIZED.code] = WaterModes.CUSTOMIZED.value
+        if features.is_smart_clean_mode_set_supported:
+            mapping[WaterModes.SMART_MODE.code] = WaterModes.SMART_MODE.value
+        return mapping
     return {mode.code: mode.value for mode in get_water_modes(features)}
 
 
@@ -326,6 +338,21 @@ def _resolve_clean_mode(value: int | VacuumModes | None, features: DeviceFeature
     return VacuumModes.from_code_optional(value)
 
 
+def _resolve_water_mode(value: int | WaterModes | None, features: DeviceFeatures) -> WaterModes | None:
+    """Resolve intermediate 221..250 water-slider codes to their mode range.
+
+    Roborock reports individual slider positions, not only the canonical
+    codes that exist in WaterModes. Unknown positions must stay unknown.
+    """
+    if features.is_water_slide_mode_supported and isinstance(value, int):
+        position = value - 220
+        if 1 <= position <= 30:
+            for last_position, mode in _WATER_SLIDE_RANGES:
+                if position <= last_position:
+                    return mode
+    return _resolve_mode_code(value, WaterModes)
+
+
 def get_current_cleaning_mode(
     clean_mode: int | VacuumModes | None,
     water_mode: int | WaterModes | None,
@@ -336,7 +363,7 @@ def get_current_cleaning_mode(
     if not features.is_support_water_mode:
         return None
     clean_mode_enum = _resolve_clean_mode(clean_mode, features)
-    water_mode_enum = _resolve_mode_code(water_mode, WaterModes)
+    water_mode_enum = _resolve_water_mode(water_mode, features)
     mop_mode_enum = _resolve_mode_code(mop_mode, CleanRoutes)
     if clean_mode_enum is None or water_mode_enum is None:
         return None
