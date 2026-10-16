@@ -584,7 +584,7 @@ def test_get_cleaning_mode_parameters_water_slide_device() -> None:
 
 
 def test_cleaning_mode_options_water_slide_device() -> None:
-    """Water-slide devices should not expose unsupported custom or smart water modes."""
+    """Advertised special modes must not be discarded just because water uses a slider."""
     status_trait = _create_cleaning_mode_status_trait(
         is_water_slide_mode_supported=True,
         is_customized_clean_supported=True,
@@ -595,7 +595,83 @@ def test_cleaning_mode_options_water_slide_device() -> None:
         CleaningMode.VACUUM,
         CleaningMode.VAC_AND_MOP,
         CleaningMode.MOP,
+        CleaningMode.CUSTOM,
+        CleaningMode.SMART_MODE,
     ]
+    assert status_trait.water_mode_mapping[204] == "custom"
+    assert status_trait.water_mode_mapping[209] == "smart_mode"
+    assert get_cleaning_mode_parameters(CleaningMode.SMART_MODE, status_trait._device_features_trait) == [
+        {"fan_power": 110, "water_box_mode": 209, "mop_mode": 306}
+    ]
+    assert get_cleaning_mode_parameters(CleaningMode.CUSTOM, status_trait._device_features_trait) == [
+        {"fan_power": 106, "water_box_mode": 204, "mop_mode": 302}
+    ]
+
+    status_trait.fan_power = 110
+    status_trait.water_box_mode = 209
+    status_trait.mop_mode = 306
+    assert status_trait.water_mode_name == "smart_mode"
+    assert status_trait.current_cleaning_mode_name == "smart_mode"
+
+    status_trait.fan_power = 106
+    status_trait.water_box_mode = 204
+    status_trait.mop_mode = 302
+    assert status_trait.water_mode_name == "custom"
+    assert status_trait.current_cleaning_mode_name == "custom"
+
+
+def test_cleaning_mode_options_water_slide_require_capabilities() -> None:
+    """Do not expose AI SmartPlan or custom writes if device flags do not advertise them."""
+    status_trait = _create_cleaning_mode_status_trait(
+        is_water_slide_mode_supported=True,
+        is_customized_clean_supported=False,
+        is_smart_clean_mode_set_supported=False,
+    )
+
+    assert status_trait.cleaning_mode_options == [
+        CleaningMode.VACUUM,
+        CleaningMode.VAC_AND_MOP,
+        CleaningMode.MOP,
+    ]
+    assert 204 not in status_trait.water_mode_mapping
+    assert 209 not in status_trait.water_mode_mapping
+    with pytest.raises(RoborockUnsupportedFeature):
+        get_cleaning_mode_parameters(CleaningMode.SMART_MODE, status_trait._device_features_trait)
+    with pytest.raises(RoborockUnsupportedFeature):
+        get_cleaning_mode_parameters(CleaningMode.CUSTOM, status_trait._device_features_trait)
+
+
+@pytest.mark.parametrize("water_code", [221, 222, 223, 224, 227, 229, 231, 234, 236, 238, 239, 242, 244, 246, 249, 250])
+def test_current_cleaning_mode_intermediate_water_slide_positions(water_code: int) -> None:
+    """Noncanonical slider steps are legitimate mopping, not an unknown cleaning mode."""
+    status_trait = _create_cleaning_mode_status_trait(is_water_slide_mode_supported=True)
+    status_trait.fan_power = 102
+    status_trait.water_box_mode = water_code
+    status_trait.mop_mode = 300
+
+    assert status_trait.water_mode_name is not None
+    assert status_trait.current_cleaning_mode == CleaningMode.VAC_AND_MOP
+
+
+@pytest.mark.parametrize("water_code", [220, 251, 999])
+def test_current_cleaning_mode_invalid_water_slide_positions(water_code: int) -> None:
+    """Out-of-range slider codes should not be guessed as mopping."""
+    status_trait = _create_cleaning_mode_status_trait(is_water_slide_mode_supported=True)
+    status_trait.fan_power = 102
+    status_trait.water_box_mode = water_code
+    status_trait.mop_mode = 300
+
+    assert status_trait.current_cleaning_mode is None
+
+
+def test_non_water_slide_unknown_code_still_unknown() -> None:
+    """Slider-only readings must not be reinterpreted on ordinary water mode devices."""
+    status_trait = _create_cleaning_mode_status_trait(is_water_slide_mode_supported=False)
+    status_trait.fan_power = 102
+    status_trait.water_box_mode = 223
+    status_trait.mop_mode = 300
+
+    assert status_trait.current_cleaning_mode is None
 
 
 def test_current_cleaning_mode_gentle_not_mop_without_pure_mop() -> None:
@@ -620,7 +696,7 @@ def test_water_slide_mode_mapping() -> None:
     status_trait = StatusTrait(cast(DeviceFeaturesTrait, features), region="eu")
 
     assert features.is_water_slide_mode_supported
-    assert status_trait.water_mode_mapping == {
+    expected_modes = {
         200: "off",
         221: "slight",
         225: "low",
@@ -630,6 +706,11 @@ def test_water_slide_mode_mapping() -> None:
         245: "high",
         250: "extreme",
     }
+    if features.is_customized_clean_supported:
+        expected_modes[204] = "custom"
+    if features.is_smart_clean_mode_set_supported:
+        expected_modes[209] = "smart_mode"
+    assert status_trait.water_mode_mapping == expected_modes
     assert [mode.value for mode in status_trait.water_mode_options] == [
         "off",
         "slight",
@@ -639,6 +720,8 @@ def test_water_slide_mode_mapping() -> None:
         "moderate",
         "high",
         "extreme",
+        *(["custom"] if features.is_customized_clean_supported else []),
+        *(["smart_mode"] if features.is_smart_clean_mode_set_supported else []),
     ]
 
     status_trait.water_box_mode = 225
